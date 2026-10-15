@@ -94,14 +94,15 @@
     horizon: 0, ref: 0, R: 150,
     cam: { x: 0.5, y: 0.29, s: 1, dim: 0, city: 0, a: 1 },
     camReady: false,
-    entered: false, start: 0, intro: 0,
+    entered: false, dropT: 0,
     rot: 0, spin: 0, fling: 0, rotV: 0,
     drag: null,
     light: [-0.45, -0.55, 0.7],
-    mouse: { x: 0.5, y: 0.3, has: false },
+    mouse: { x: 0.5, y: 0.3, has: false, vx: 0, t: 0 },
     hold: 0, holding: false, press: 0, shake: 0,
     cityDark: 1, cel: 0, wave: 0,
     night: 0, pulse: 0, trail: [],
+    swing: { a: 0, v: 0 }, par: { x: 0, y: 0 },
     ballAlpha: 1,
     ball: { x: -999, y: -999, R: 0, front: false },
     cacheDirty: true,
@@ -186,7 +187,10 @@
 
   const skyCanvas = document.createElement('canvas'); // skyline at the horizon, for reflections
   const sctx = skyCanvas.getContext('2d');
-  const cityCache = document.createElement('canvas'); // building bodies, redrawn only on theme/resize
+  const cityCache = document.createElement('canvas'); // front buildings, redrawn only on theme/resize
+  const cityBack = document.createElement('canvas'); // back buildings
+  const bctx = cityBack.getContext('2d');
+  const PAD = 40; // extra width so parallax never shows an edge
   const cctx = cityCache.getContext('2d');
   let city = null;
 
@@ -280,17 +284,21 @@
   function renderCityCache() {
     const d = S.dpr;
     const cacheH = Math.ceil(S.ref * 0.42);
-    cityCache.width = Math.max(1, Math.ceil(S.W * d));
-    cityCache.height = Math.max(1, Math.ceil(cacheH * d));
-    cctx.setTransform(d, 0, 0, d, 0, 0);
-    cctx.clearRect(0, 0, S.W, cacheH);
+    for (const cv of [cityCache, cityBack]) {
+      cv.width = Math.max(1, Math.ceil((S.W + PAD * 2) * d));
+      cv.height = Math.max(1, Math.ceil(cacheH * d));
+    }
+    cctx.setTransform(d, 0, 0, d, PAD * d, 0);
+    cctx.clearRect(-PAD, 0, S.W + PAD * 2, cacheH);
+    bctx.setTransform(d, 0, 0, d, PAD * d, 0);
+    bctx.clearRect(-PAD, 0, S.W + PAD * 2, cacheH);
     const base = cacheH;
     const [back, front] = city.layers;
 
-    cctx.fillStyle = rgba(C.back);
-    cctx.beginPath();
-    for (const b of back.b) buildingPath(cctx, b, base, S.ref);
-    cctx.fill();
+    bctx.fillStyle = rgba(C.back);
+    bctx.beginPath();
+    for (const b of back.b) buildingPath(bctx, b, base, S.ref);
+    bctx.fill();
 
     for (const b of front.b) {
       const g = cctx.createLinearGradient(b.x, 0, b.x + b.w, 0);
@@ -441,20 +449,17 @@
     m: el.dataset.sceneMobile ? JSON.parse(el.dataset.sceneMobile) : null
   }));
   const CAM_KEYS = ['x', 'y', 's', 'dim', 'city', 'a'];
-  let midVis = 0;
 
   function cameraTarget() {
     const vh = S.H, mid = vh / 2, mobile = S.W < 900;
     const acc = { x: 0, y: 0, s: 0, dim: 0, city: 0, a: 0 };
     let sum = 0;
-    midVis = 0;
     for (const sc of scenes) {
       const r = sc.el.getBoundingClientRect();
       const center = (r.top + r.bottom) / 2;
       const plateau = Math.max(0, r.height - vh) / 2;
       const dist = Math.max(0, Math.abs(center - mid) - plateau);
       const w = smooth(1 - dist / (vh * 0.8));
-      if (sc.el.id === 'midnight') midVis = w;
       if (w <= 0) continue;
       const d = (mobile && sc.m) || sc.d;
       for (const key of CAM_KEYS) {
@@ -477,7 +482,7 @@
   const facets = { u: [], v: [] }; // last frame's visible facets, in ball units
   const BUCKETS = 22;
 
-  function drawBall(c, cx, cy, R, alpha) {
+  function drawBall(c, cx, cy, R, alpha, px = cx, py = -40) {
     if (!(R > 2)) return;
     const glowA = (0.28 + S.hold * 0.35 + S.cel * 0.1 + S.pulse * 0.55 + Math.min(0.2, Math.abs(S.rotV) * 0.05)) * S.cam.a;
     const halo = c.createRadialGradient(cx, cy, R * 0.6, cx, cy, R * (3.2 + S.hold));
@@ -488,7 +493,11 @@
 
     // the line it hangs from
     c.fillStyle = rgba(C.win, 0.5 * alpha);
-    for (let y = cy - R - 4; y > -4; y -= 7) c.fillRect(cx - 0.6, y, 1.2, 2.2);
+    {
+      const dx = px - cx, dy = py - cy, dl = Math.hypot(dx, dy) || 1;
+      const ux = dx / dl, uy = dy / dl;
+      for (let d = R + 4; d < dl; d += 7) c.fillRect(cx + ux * d - 0.6, cy + uy * d, 1.2, 2.2);
+    }
 
     if (alpha <= 0.01) return;
     c.save();
@@ -568,6 +577,7 @@
     c.arc(cx, cy, R, 0, Math.PI * 2);
     c.clip();
     const lvl = alpha * (0.94 + S.hold * 0.06);
+    if (S.swing.a) { c.translate(cx, cy); c.rotate(-S.swing.a); c.translate(-cx, -cy); }
     if (logo.mix < 1) {
       c.globalAlpha = lvl * (1 - logo.mix);
       c.drawImage(logo.prev, cx - R, cy - R, R * 2, R * 2);
@@ -595,29 +605,8 @@
   /* ------------------------------------------------------------------ */
 
   const M = { state: 'idle', t: 0, P: null, shown: false };
-  const strikeBtn = $('#strike');
-  const ticksSvg = $('#ticks');
-  const statusEl = $('#midnightStatus');
-  const afterEl = $('#after');
-  let lastTick = 0;
 
-  // twelve strikes around the ball
-  (() => {
-    const ns = 'http://www.w3.org/2000/svg';
-    for (let i = 0; i < 12; i++) {
-      const a = (i / 12) * Math.PI * 2 - Math.PI / 2;
-      const l = document.createElementNS(ns, 'line');
-      l.setAttribute('x1', 50 + Math.cos(a) * 46);
-      l.setAttribute('y1', 50 + Math.sin(a) * 46);
-      l.setAttribute('x2', 50 + Math.cos(a) * 49.5);
-      l.setAttribute('y2', 50 + Math.sin(a) * 49.5);
-      l.setAttribute('class', 'tick');
-      ticksSvg.appendChild(l);
-    }
-  })();
-  const ticks = $$('.tick', ticksSvg);
-
-  function buildYearTargets(R) {
+  function buildYearTargets(R, oy) {
     const tw = Math.min(S.W * 0.86, 900);
     const g = clamp(tw / 82, 5, 12.5);
     const off = document.createElement('canvas');
@@ -637,7 +626,7 @@
     const pts = [];
     for (let y = g / 2; y < th; y += g) {
       for (let x = g / 2; x < tw; x += g) {
-        if (data[((y | 0) * off.width + (x | 0)) * 4 + 3] > 140) pts.push([(x - tw / 2) / R, (y - th / 2) / R - 0.35]);
+        if (data[((y | 0) * off.width + (x | 0)) * 4 + 3] > 140) pts.push([(x - tw / 2) / R, (y - th / 2) / R + oy]);
       }
     }
     return { pts, dot: (g * 0.36) / R };
@@ -646,7 +635,7 @@
   function strike() {
     if (M.state === 'struck') return;
     const R = S.ball.R || S.R;
-    const { pts, dot } = buildYearTargets(R);
+    const { pts, dot } = buildYearTargets(R, (S.H * 0.42 - S.ball.y) / R);
     const n = pts.length;
     const rand = Math.random;
     const fu = facets.u.length ? facets.u : [0], fv = facets.v.length ? facets.v : [0];
@@ -672,38 +661,14 @@
     S.hold = 0;
     S.holding = false;
     S.shake = reduced ? 0 : 1;
-    body.classList.add('is-midnight');
-    statusEl.textContent = 'Midnight. Happy New Year.';
     if (navigator.vibrate) navigator.vibrate([24, 60, 40]);
     emit('strike');
   }
 
-  function resetMidnight(silent) {
+  function resetMidnight() {
     if (M.state !== 'struck') return;
     M.state = 'resetting';
     M.t = 0;
-    body.classList.remove('is-celebrating');
-    afterEl.setAttribute('aria-hidden', 'true');
-    $$('a, button', afterEl).forEach(el => el.setAttribute('tabindex', '-1'));
-    statusEl.textContent = '';
-    if (silent === true) return;
-    strikeBtn.focus({ preventScroll: true });
-    emit('reset');
-  }
-
-  // a tap in the new year's sky pushes the dots away; they spring back
-  function shock(x, y) {
-    const P = M.P;
-    if (!P || M.state !== 'struck' || M.t < 2.2) return false;
-    const radius = Math.max(S.W, S.H) * 0.45;
-    for (let i = 0; i < P.n; i++) {
-      const dx = P.px[i] - x, dy = P.py[i] - y, d = Math.hypot(dx, dy) || 1;
-      if (d > radius) continue;
-      const f = Math.pow(1 - d / radius, 1.4) * 2600;
-      P.vx[i] += (dx / d) * f; P.vy[i] += (dy / d) * f;
-    }
-    emit('shock');
-    return true;
   }
 
   function updateMidnight(dt) {
@@ -711,14 +676,7 @@
     M.t += dt;
     if (M.state === 'struck') {
       S.ballAlpha = 0;
-      // once you have scrolled on, the new year quietly folds back into the ball
-      if (M.t > 3 && midVis < 0.02) { resetMidnight(true); return; }
-      if (!M.shown && (M.t > 2.6 || reduced)) {
-        M.shown = true;
-        body.classList.add('is-celebrating');
-        afterEl.setAttribute('aria-hidden', 'false');
-        $$('a, button', afterEl).forEach(el => el.removeAttribute('tabindex'));
-      }
+      if (!M.shown && (M.t > 1.6 || reduced)) M.shown = true;
     } else if (M.state === 'resetting') {
       const dur = reduced ? 0.4 : 1.4;
       S.ballAlpha = smooth((M.t - dur * 0.7) / (dur * 0.3));
@@ -726,7 +684,6 @@
         M.state = 'idle';
         M.P = null;
         S.ballAlpha = 1;
-        body.classList.remove('is-midnight');
       }
     }
   }
@@ -740,7 +697,6 @@
     const mx = S.mouse.x * S.W, my = S.mouse.y * S.H, near = S.mouse.has && M.state === 'struck';
     let alpha = 1;
     if (M.state === 'resetting') alpha = 1 - smooth((M.t - resetDur * 0.7) / (resetDur * 0.3));
-    alpha *= smooth(midVis * 1.6);
     if (alpha <= 0.01) return;
     const damp = Math.exp(-dt * 3.2);
 
@@ -817,11 +773,10 @@
   /* After midnight: paint the sky with light                            */
   /* ------------------------------------------------------------------ */
 
-  const midnightEl = $('#midnight');
   let lastPaint = null;
   if (finePointer) {
     addEventListener('pointermove', e => {
-      if (reduced || M.state !== 'struck' || !M.shown || midVis < 0.6) { lastPaint = null; return; }
+      if (reduced || M.state !== 'struck' || !M.shown) { lastPaint = null; return; }
       if (e.target.closest && e.target.closest('a, button')) { lastPaint = null; return; }
       const x = e.clientX, y = e.clientY;
       if (lastPaint) {
@@ -859,6 +814,69 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* The entrance: 3, 2, 1, the ball drops, midnight, then the site      */
+  /* ------------------------------------------------------------------ */
+
+  const I = { phase: 'wait', t: 0, n: 4 };
+  const COUNT = 3.3;
+
+  function startIntro() {
+    S.entered = true;
+    S.ballAlpha = 1;
+    M.state = 'idle'; M.P = null;
+    if (reduced) { finishIntro(); return; }
+    I.phase = 'count'; I.t = 0; I.n = 4;
+    S.dropT = 0;
+    body.classList.add('is-intro');
+    body.classList.remove('is-loaded');
+    emit('introstart');
+  }
+
+  function finishIntro() {
+    I.phase = 'done';
+    S.hold = 0;
+    S.dropT = 1;
+    body.classList.remove('is-intro');
+    body.classList.add('is-loaded');
+    emit('introdone');
+  }
+
+  function skipIntro() {
+    if (I.phase === 'done' || I.phase === 'wait') return;
+    if (M.state === 'struck') resetMidnight();
+    S.hold = 0;
+    S.dropT = 1;
+    emit('count', 0);
+    finishIntro();
+  }
+
+  function updateIntro(dt) {
+    if (I.phase === 'count') {
+      I.t += dt;
+      // the ball travels its line while the city holds its breath
+      S.dropT = easeInOut(clamp(I.t / COUNT, 0, 1));
+      S.hold = clamp(I.t / COUNT, 0, 1);
+      const n = Math.max(1, 3 - Math.floor((I.t / COUNT) * 3));
+      if (n !== I.n) { I.n = n; emit('count', n); }
+      if (I.t >= COUNT) {
+        S.hold = 0;
+        S.dropT = 1;
+        I.phase = 'burst'; I.t = 0;
+        emit('count', 0);
+        strike();
+      }
+    } else if (I.phase === 'burst') {
+      I.t += dt;
+      if (I.t > 2.7) { resetMidnight(); I.phase = 'settle'; I.t = 0; }
+    } else if (I.phase === 'settle') {
+      I.t += dt;
+      if (I.t > 1.05) finishIntro();
+    } else if (I.phase === 'done') {
+      S.hold = Math.max(0, S.hold - dt / 0.7);
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Frame                                                               */
   /* ------------------------------------------------------------------ */
 
@@ -878,7 +896,6 @@
     // letter crossfade
     if (logo.mix < 1) logo.mix = Math.min(1, logo.mix + dt / 0.5);
 
-    S.intro = !S.entered ? 0 : reduced ? 1 : Math.min(1, (performance.now() - S.start) / 2200);
 
     // camera
     const target = cameraTarget();
@@ -907,33 +924,34 @@
     const lk = 1 - Math.exp(-dt * 4);
     for (let i = 0; i < 3; i++) S.light[i] = lerp(S.light[i], L[i] / ll, lk);
 
-    // hold to strike
-    if (M.state === 'idle') {
-      if (S.holding) S.hold = Math.min(1, S.hold + dt / 2.6);
-      else S.hold = Math.max(0, S.hold - dt / 0.7);
-      const count = Math.floor(S.hold * 12 + 1e-6);
-      if (count !== lastTick) {
-        ticks.forEach((el, i) => el.classList.toggle('on', i < count));
-        if (count > lastTick && S.holding) {
-          if (navigator.vibrate) navigator.vibrate(8);
-          emit('tick', count);
-        }
-        lastTick = count;
-      }
-      if (S.hold >= 1) strike();
-    } else if (lastTick) {
-      ticks.forEach(el => el.classList.remove('on'));
-      lastTick = 0;
-    }
+    updateIntro(dt);
 
     // the ball gives a little under your finger, and trembles as midnight nears
     S.press = lerp(S.press, S.holding ? 1 : 0, 1 - Math.exp(-dt * 14));
     S.shake = Math.max(0, S.shake - dt * 1.6);
     S.pulse = Math.max(0, S.pulse - dt * 1.4);
 
-    // the evening moves with the page: 9 PM at the top, 11:59 at the midnight section
-    const midTop = midnightEl.getBoundingClientRect().top + scrollY;
-    S.night = M.state === 'struck' ? 1 : clamp(scrollY / Math.max(1, midTop), 0, 1);
+    // pendulum: a gentle restoring pull, a little air resistance
+    if (!reduced) {
+      const sw = S.swing;
+      const L = Math.max(120, S.ball.len || 300);
+      sw.v += (-(9.8 * 60 / L) * Math.sin(sw.a) - 0.9 * sw.v) * dt;
+      // brushing past the ball nudges it
+      if (S.mouse.has && I.phase === 'done' && !S.ball.front) {
+        const dx = S.mouse.x * S.W - S.ball.x, dy = S.mouse.y * S.H - S.ball.y;
+        if (Math.hypot(dx, dy) < S.ball.R * 1.5) sw.v += S.mouse.vx * 0.00005;
+      }
+      sw.a = clamp(sw.a + sw.v * dt, -0.6, 0.6);
+      S.mouse.vx *= Math.exp(-dt * 10);
+    }
+    const tpx = S.mouse.has && !reduced ? (S.mouse.x - 0.5) : 0;
+    const tpy = S.mouse.has && !reduced ? (S.mouse.y - 0.5) : 0;
+    S.par.x = lerp(S.par.x, tpx, 1 - Math.exp(-dt * 3));
+    S.par.y = lerp(S.par.y, tpy, 1 - Math.exp(-dt * 3));
+
+    // the evening deepens as you move down the page
+    const maxScroll = Math.max(1, document.documentElement.scrollHeight - S.H);
+    S.night = M.state === 'struck' ? 1 : 0.35 + 0.65 * clamp(scrollY / maxScroll, 0, 1);
 
     // rotation: idle drift + scroll spin + flings from dragging
     const prev = S.rot;
@@ -948,13 +966,12 @@
     updateMidnight(dt);
 
     // city lights
-    const introDark = 1 - smooth((S.intro - 0.35) / 0.55);
     if (M.state === 'struck') {
       S.cityDark = 0;
       S.cel = Math.min(1, S.cel + dt * 2);
       S.wave = reduced ? 2 : easeOut(clamp((M.t - 0.15) / 2.4, 0, 1)) * 1.1;
     } else {
-      S.cityDark = Math.max(introDark, S.hold * 0.97);
+      S.cityDark = I.phase === 'wait' ? 1 : I.phase === 'count' ? lerp(0.3, 0.96, S.hold) : 0;
       S.cel = Math.max(0, S.cel - dt / 1.6);
     }
 
@@ -1003,7 +1020,7 @@
     c.fillStyle = rgba(C.win);
     for (const s of stars) {
       c.globalAlpha = (reduced ? 0.5 : 0.25 + 0.55 * (0.5 + 0.5 * Math.sin(S.t * s.sp + s.ph))) * (0.35 + 0.65 * S.night);
-      c.fillRect(s.x, s.y, s.r, s.r);
+      c.fillRect(s.x + S.par.x * 3, s.y + S.par.y * 2, s.r, s.r);
     }
     c.globalAlpha = 1;
 
@@ -1011,28 +1028,45 @@
 
     // ball placement
     const R = S.R * S.cam.s * (1 - S.press * 0.035 + S.hold * 0.02);
-    const drop = easeOut(clamp(S.intro / 0.85, 0, 1));
-    const par = S.mouse.has ? (S.mouse.x - 0.5) * 14 : 0;
+    const drop = S.dropT;
+    const par = -S.par.x * 10;
     const tension = reduced ? 0 : Math.max(0, S.hold - 0.7) / 0.3;
     const jx = tension ? Math.sin(S.t * 46) * tension * 1.6 : 0;
     const jy = tension ? Math.cos(S.t * 39) * tension * 1.2 : 0;
-    const bx = S.cam.x * W + par + jx;
-    const by = lerp(-R * 1.6, S.cam.y * H, drop) + jy + easeInOut(S.hold) * H * 0.035;
-    S.ball.x = bx; S.ball.y = by; S.ball.R = R;
+    // the ball hangs from a point above the frame and swings on its line
+    const pivX = S.cam.x * W + par, pivY = -40;
+    const restY = lerp(-R * 1.6, S.cam.y * H, drop);
+    const len = Math.max(10, restY - pivY);
+    const sa = S.swing.a;
+    const bx = pivX + Math.sin(sa) * len + jx;
+    const by = pivY + Math.cos(sa) * len + jy;
+    S.ball.x = bx; S.ball.y = by; S.ball.R = R; S.ball.len = len;
+    S.ball.px = pivX; S.ball.py = pivY;
     // over the text sections the ball floats above the dimmed city instead of behind it
     const ballFront = S.cam.dim > 0.35;
     S.ball.front = ballFront;
     // ease the ball in late, so it arrives after the section's copy has settled
     const ballA = S.ballAlpha * smooth((S.cam.a - 0.5) / 0.45);
-    if (!ballFront) drawBall(c, bx, by, R, ballA);
+    if (!ballFront) drawBall(c, bx, by, R, ballA, pivX, pivY);
 
     // skyline into its own layer so the water can reflect it
     if (S.cacheDirty) renderCityCache();
     sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     sctx.clearRect(0, 0, W, hz);
-    sctx.drawImage(cityCache, 0, 0, cityCache.width, cityCache.height, 0, cityBase - city.cacheH, W, city.cacheH);
-    for (const layer of city.layers) drawWindows(sctx, layer, cityBase);
+    // depth: the far buildings drift less than the near ones
+    const pxB = S.par.x * 7, pxF = S.par.x * 16, pyF = S.par.y * 4;
+    const cw = W + PAD * 2;
+    sctx.save();
+    sctx.translate(pxB, pyF * 0.4);
+    sctx.drawImage(cityBack, 0, 0, cityBack.width, cityBack.height, -PAD, cityBase - city.cacheH, cw, city.cacheH);
+    drawWindows(sctx, city.layers[0], cityBase);
+    sctx.restore();
+    sctx.save();
+    sctx.translate(pxF, pyF);
+    sctx.drawImage(cityCache, 0, 0, cityCache.width, cityCache.height, -PAD, cityBase - city.cacheH, cw, city.cacheH);
+    drawWindows(sctx, city.layers[1], cityBase);
     drawSpire(sctx, cityBase);
+    sctx.restore();
     c.drawImage(skyCanvas, 0, 0, skyCanvas.width, skyCanvas.height, 0, 0, W, hz);
 
     drawReflections(c, bx, by, (0.1 + Math.min(0.55, Math.abs(S.rotV) * 0.16)) * S.ballAlpha * (1 - S.cam.dim) * drop);
@@ -1117,7 +1151,7 @@
       c.fillStyle = dg;
       c.fillRect(0, 0, W, H);
     }
-    if (ballFront) drawBall(c, bx, by, R, ballA);
+    if (ballFront) drawBall(c, bx, by, R, ballA, pivX, pivY);
 
     drawParticles(c, bx, by, R, dt);
     drawTrail(c);
@@ -1142,8 +1176,13 @@
 
   if (finePointer) {
     addEventListener('pointermove', e => {
+      const prevX = S.mouse.x;
       S.mouse.x = e.clientX / S.W;
       S.mouse.y = e.clientY / S.H;
+      const nowT = performance.now();
+      const mdt = Math.max(8, nowT - (S.mouse.t || nowT - 16));
+      S.mouse.vx = lerp(S.mouse.vx, ((S.mouse.x - prevX) * S.W) / mdt * 1000, 0.5);
+      S.mouse.t = nowT;
       S.mouse.has = true;
     }, { passive: true });
     document.addEventListener('pointerleave', () => { S.mouse.has = false; });
@@ -1151,8 +1190,9 @@
 
   // grab the sky in the hero (or the "make it yours" scene) and spin the ball
   $$('.hero, .yours').forEach(zone => {
+    if (!zone) return;
     zone.addEventListener('pointerdown', e => {
-      if (e.button !== 0 || e.target.closest('a, button, input, label, .yours__panel')) return;
+      if (e.button !== 0 || I.phase !== 'done' || e.target.closest('a, button, input, label, .yours__panel')) return;
       S.drag = { x: e.clientX, sx: e.clientX, sy: e.clientY, t: performance.now(), v: 0, moved: false };
       zone.setPointerCapture?.(e.pointerId);
     });
@@ -1168,6 +1208,7 @@
       }
       if (!S.drag.moved) return;
       const d = dx / Math.max(60, S.ball.R * 1.1);
+      if (!reduced) S.swing.v += dx * 0.0016;
       S.rot += d;
       const dtm = Math.max(8, now - S.drag.t) / 1000;
       S.drag.v = lerp(S.drag.v, d / dtm, 0.5);
@@ -1180,6 +1221,7 @@
         // a tap on the ball makes it flare
         if (e && e.type === 'pointerup' && window.Rumor.ballHit(S.drag.sx, S.drag.sy)) {
           S.pulse = 1;
+          if (!reduced) S.swing.v += (Math.random() < 0.5 ? -1 : 1) * 0.9;
           if (!reduced) S.fling += 2.5;
           emit('balltap');
         }
@@ -1197,61 +1239,17 @@
     zone.addEventListener('lostpointercapture', end);
   });
 
-  const startHold = () => { if (M.state === 'idle' && !S.holding) { S.holding = true; emit('holdstart'); } };
-  const endHold = () => { if (S.holding) { S.holding = false; emit('holdend'); } };
-  strikeBtn.addEventListener('pointerdown', e => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    strikeBtn.setPointerCapture?.(e.pointerId);
-    startHold();
-  });
-  strikeBtn.addEventListener('pointerup', endHold);
-  strikeBtn.addEventListener('pointercancel', endHold);
-  strikeBtn.addEventListener('lostpointercapture', endHold);
-  strikeBtn.addEventListener('contextmenu', e => e.preventDefault());
-  strikeBtn.addEventListener('keydown', e => {
-    if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); startHold(); }
-    else if (e.key === ' ' || e.key === 'Enter') e.preventDefault();
-  });
-  strikeBtn.addEventListener('keyup', e => { if (e.key === ' ' || e.key === 'Enter') endHold(); });
-  strikeBtn.addEventListener('blur', endHold);
-  strikeBtn.addEventListener('click', e => e.preventDefault());
-
-  $('#skipMidnight').addEventListener('click', strike);
-  $('#replay').addEventListener('click', () => resetMidnight());
-  $('#midnight').addEventListener('pointerdown', e => {
-    if (e.target.closest('a, button')) return;
-    shock(e.clientX, e.clientY);
-  });
-
   /* ------------------------------------------------------------------ */
   /* Page behaviour                                                      */
   /* ------------------------------------------------------------------ */
 
   // header swaps "Vol. 01" for the invitation button once you leave the hero
-  const onScroll = () => body.classList.toggle('is-scrolled', scrollY > S.H * 0.55);
+  const onScroll = () => body.classList.toggle('is-scrolled', scrollY > S.H * 0.4);
   addEventListener('scroll', onScroll, { passive: true });
 
-  // the opening line lights up word by word as you read it
-  const lede = $('[data-scrub]');
-  const words = lede.textContent.trim().split(/\s+/);
-  lede.setAttribute('aria-label', lede.textContent.trim());
-  lede.innerHTML = words.map(w => `<span class="w" aria-hidden="true">${w}</span>`).join(' ');
-  const wordEls = $$('.w', lede);
-  let lastScrub = -1;
-  function scrubWords() {
-    const r = lede.getBoundingClientRect();
-    if (r.bottom < -50 || r.top > S.H + 50) return;
-    const p = reduced ? 1 : clamp((S.H * 0.82 - r.top) / (r.height + S.H * 0.25), 0, 1);
-    if (Math.abs(p - lastScrub) < 0.002) return;
-    lastScrub = p;
-    const n = wordEls.length;
-    wordEls.forEach((el, i) => {
-      const k = clamp(p * (n + 1) - i, 0, 1);
-      el.style.opacity = (0.14 + 0.86 * k).toFixed(3);
-      el.style.transform = reduced ? '' : `translateY(${((1 - k) * 0.12).toFixed(3)}em)`;
-    });
-  }
+  // the story headline is animated by the experience layer now
+  function setLede() {}
+  function scrubWords() {}
 
   // hairline rows draw in as they arrive
   const io = new IntersectionObserver(entries => {
@@ -1261,127 +1259,9 @@
   }, { threshold: 0.3, rootMargin: '0px 0px -8% 0px' });
   $$('.reveal').forEach((el, i) => { el.style.transitionDelay = `${(i % 6) * 60}ms`; io.observe(el); });
 
-  // the address stays a rumor
-  const SCRAMBLE = 'RUMOR░▒▓█/\\-_';
-  $$('.redact').forEach(el => {
-    const hidden = el.textContent;
-    const secret = el.dataset.secret;
-    el.setAttribute('aria-label', `Address hidden. ${secret}`);
-    let raf = 0;
-    const scramble = (to, open) => {
-      cancelAnimationFrame(raf);
-      el.classList.toggle('is-open', open);
-      if (open) emit('reveal');
-      if (reduced) { el.textContent = to; return; }
-      const len = Math.max(el.textContent.length, to.length);
-      const t0 = performance.now();
-      const tick = now => {
-        const p = clamp((now - t0) / 520, 0, 1);
-        let out = '';
-        for (let i = 0; i < len; i++) {
-          const settle = i / len < p;
-          out += settle ? (to[i] || '') : (to[i] === ' ' ? ' ' : SCRAMBLE[(Math.random() * SCRAMBLE.length) | 0]);
-        }
-        el.textContent = out;
-        if (p < 1) raf = requestAnimationFrame(tick); else el.textContent = to;
-      };
-      raf = requestAnimationFrame(tick);
-    };
-    el.addEventListener('mouseenter', () => scramble(secret, true));
-    el.addEventListener('mouseleave', () => scramble(hidden, false));
-    el.addEventListener('focus', () => scramble(secret, true));
-    el.addEventListener('blur', () => scramble(hidden, false));
-    el.addEventListener('click', () => (el.classList.contains('is-open') ? scramble(hidden, false) : scramble(secret, true)));
-  });
-
-  // what time it is in New York right now
-  const nyEl = $('#nyTime') || { set textContent(v) {} };
-  const nyFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' });
-  const tickNY = () => { nyEl.textContent = `It’s ${nyFmt.format(new Date())} in New York. You don’t have to wait.`; };
-  tickNY();
-  setInterval(tickNY, 20000);
-
-  // guest list request (front end only in this demo)
-  const form = $('#listForm');
-  const fields = {
-    name: { el: $('#fName'), err: $('#fNameErr'), check: v => (v.trim().length > 1 ? '' : 'Enter your full name.') },
-    email: { el: $('#fEmail'), err: $('#fEmailErr'), check: v => (/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v.trim()) ? '' : 'Enter an email address like name@example.com.') }
-  };
-  const shakeEl = el => {
-    if (reduced) return;
-    el.classList.remove('is-shaking');
-    void el.offsetWidth;
-    el.classList.add('is-shaking');
-  };
-  const validate = (f, loud) => {
-    const msg = f.check(f.el.value);
-    f.err.textContent = msg;
-    f.el.setAttribute('aria-invalid', msg ? 'true' : 'false');
-    if (msg) f.el.setAttribute('aria-describedby', f.err.id); else f.el.removeAttribute('aria-describedby');
-    if (msg && loud) { shakeEl(f.el.parentElement); emit('invalid'); }
-    return !msg;
-  };
-  Object.values(fields).forEach(f => {
-    f.el.addEventListener('blur', () => { if (f.el.value) validate(f); });
-    f.el.addEventListener('input', () => {
-      f.el.parentElement.classList.toggle('is-valid', !f.check(f.el.value));
-      if (f.el.getAttribute('aria-invalid') === 'true' && !f.check(f.el.value)) validate(f);
-    });
-  });
-  form.addEventListener('animationend', e => e.target.classList.remove('is-shaking'));
-  const submitBtn = $('.list__submit');
-  form.addEventListener('submit', e => {
-    e.preventDefault();
-    if (form.classList.contains('is-sending')) return;
-    const okName = validate(fields.name, true);
-    const okEmail = validate(fields.email, true);
-    if (!okName) return fields.name.el.focus();
-    if (!okEmail) return fields.email.el.focus();
-    const name = fields.name.el.value.trim();
-    const first = name.split(/\s+/)[0];
-    $('#doneName').textContent = first ? `, ${first}` : '';
-    $('#ticketName').textContent = name;
-    const code = Array.from({ length: 6 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[(Math.random() * 31) | 0]).join('');
-    $('#ticketCode').textContent = `NYE-${code}`;
-    form.classList.add('is-sending');
-    submitBtn.setAttribute('aria-busy', 'true');
-    emit('sending');
-    // a short, honest pause so the hand-off reads as something happening
-    setTimeout(() => {
-      form.classList.add('is-leaving');
-      setTimeout(() => {
-        form.hidden = true;
-        const done = $('#listDone');
-        done.hidden = false;
-        done.focus({ preventScroll: true });
-        emit('requested', { name });
-      }, reduced ? 0 : 520);
-    }, reduced ? 0 : 1100);
-  });
-
   /* ------------------------------------------------------------------ */
-  /* Make it yours                                                       */
+  /* Public surface for the experience layer                             */
   /* ------------------------------------------------------------------ */
-
-  const DEFAULT_TITLE = 'New Year’s Eve';
-  const hostEls = [$('#hostLabel'), ...$$('.js-host')];
-  const nameIn = $('#cName');
-  const hostIn = $('#cHost');
-
-  nameIn.addEventListener('input', () => {
-    const v = nameIn.value.trim() || DEFAULT_TITLE;
-    emit('title', v);
-    document.title = `${hostIn.value.trim() || 'Rumor'} Presents: ${v}`;
-  });
-  hostIn.addEventListener('input', () => {
-    const v = hostIn.value.trim();
-    hostEls.forEach(el => { el.textContent = v || 'Rumor'; });
-    body.classList.toggle('has-host', !!v && v.toLowerCase() !== 'rumor');
-    const ch = (v.match(/[\p{L}\p{N}]/u) || [''])[0].toUpperCase();
-    const key = !v || v.toLowerCase() === 'rumor' ? 'R*' : ch || 'R*';
-    if (key !== letterKey) { letterKey = key; showLogo(); if (!reduced) S.fling += 7; emit('letter', key); }
-    document.title = `${v || 'Rumor'} Presents: ${nameIn.value.trim() || DEFAULT_TITLE}`;
-  });
 
   function setTheme(name) {
     const t = THEMES[name] || THEMES.ultramarine;
@@ -1392,34 +1272,31 @@
     root.style.setProperty('--accent', t.css.accent);
     $('meta[name="theme-color"]').setAttribute('content', t.css.deep);
     S.cacheDirty = true;
-    emit('theme', name);
+    if (!reduced) S.fling += 4;
   }
-  $$('input[name="theme"]').forEach(r => r.addEventListener('change', () => setTheme(r.value)));
 
-  $('#cReset').addEventListener('click', () => {
-    nameIn.value = '';
-    hostIn.value = '';
-    nameIn.dispatchEvent(new Event('input'));
-    hostIn.dispatchEvent(new Event('input'));
-    $('input[name="theme"][value="ultramarine"]').checked = true;
-    setTheme('ultramarine');
-  });
-
-  /* ------------------------------------------------------------------ */
-  /* Public surface for the experience layer                             */
-  /* ------------------------------------------------------------------ */
+  function setLetter(key) {
+    key = key || 'R*';
+    if (key === letterKey) return;
+    letterKey = key;
+    showLogo();
+    if (!reduced) S.fling += 7;
+  }
 
   window.Rumor = {
     ballHit(x, y) {
       const b = S.ball;
-      return S.entered && S.ballAlpha > 0.5 && !b.front && Math.hypot(x - b.x, y - b.y) < b.R * 1.08;
+      return I.phase === 'done' && S.ballAlpha > 0.5 && !b.front && Math.hypot(x - b.x, y - b.y) < b.R * 1.08;
     },
-    setGlyph() {},
     metrics() {
-      return { hold: S.hold, holding: S.holding, state: M.state, spin: Math.abs(S.rotV), dim: S.cam.dim, dragging: !!S.drag };
+      return { hold: S.hold, holding: false, state: M.state, intro: I.phase, spin: Math.abs(S.rotV), dim: S.cam.dim, dragging: !!S.drag };
     },
-    strike,
-    reset: () => resetMidnight(),
+    ballPos() { return { x: S.ball.x, y: S.ball.y, R: S.ball.R, front: S.ball.front }; },
+    setTheme,
+    setLetter,
+    setLede,
+    skipIntro,
+    replayIntro: startIntro,
     nudge(v) { if (!reduced) S.fling += v; }
   };
 
@@ -1427,19 +1304,13 @@
   /* Go                                                                  */
   /* ------------------------------------------------------------------ */
 
-  function enter() {
-    if (S.entered) return;
-    S.entered = true;
-    S.start = performance.now();
-    body.classList.add('is-loaded');
-  }
-  window.addEventListener('rumor:enter', enter);
-  if (!$('#loader')) requestAnimationFrame(enter);
+  window.addEventListener('rumor:enter', () => { if (!S.entered) startIntro(); });
+  if (!$('#loader')) requestAnimationFrame(startIntro);
 
   resize();
   onScroll();
   requestAnimationFrame(frame);
   if (document.fonts && document.fonts.ready) {
-    document.fonts.ready.then(() => { if (letterKey !== 'R*') showLogo(); if (hostIn.value.trim()) hostIn.dispatchEvent(new Event('input')); });
+    document.fonts.ready.then(() => { if (letterKey !== 'R*') showLogo(); });
   }
 })();
