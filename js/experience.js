@@ -209,7 +209,7 @@
     target.innerHTML = `<span class="roll"><span class="roll__a">${esc(text)}</span><span class="roll__b" aria-hidden="true">${esc(text)}</span></span>`;
   });
   if (finePointer && !reduced) {
-    $$('.btn, .sound').forEach(el => {
+    $$('.btn, .sound').filter(el => !el.closest('.top__dock')).forEach(el => {
       el.addEventListener('pointermove', e => {
         const r = el.getBoundingClientRect();
         el.style.translate = `${((e.clientX - (r.left + r.width / 2)) * 0.14).toFixed(1)}px ${((e.clientY - (r.top + r.height / 2)) * 0.22).toFixed(1)}px`;
@@ -327,6 +327,7 @@
   let concept = 'midnight';
 
   function placePill() {
+    if (!pill) return;
     const on = conceptOpts.find(b => b.dataset.concept === concept);
     if (!on) return;
     pill.style.width = `${on.offsetWidth}px`;
@@ -337,7 +338,7 @@
     const changed = key !== concept;
     concept = key;
     conceptOpts.forEach(b => b.setAttribute('aria-checked', String(b.dataset.concept === key)));
-    conceptWrap.dataset.active = key;
+    if (conceptWrap) conceptWrap.dataset.active = key;
     body.dataset.concept = key;
     placePill();
     const c = CONCEPTS[key];
@@ -353,28 +354,6 @@
       wipe.classList.add('run');
     }
   }
-  conceptOpts.forEach(b => b.addEventListener('click', e => {
-    // on small screens the control is a single button that cycles
-    if (innerWidth < 760) {
-      const keys = Object.keys(CONCEPTS);
-      setConcept(keys[(keys.indexOf(concept) + 1) % keys.length], [e.clientX, e.clientY]);
-      return;
-    }
-    setConcept(b.dataset.concept, [e.clientX, e.clientY]);
-  }));
-  conceptWrap.addEventListener('keydown', e => {
-    const keys = Object.keys(CONCEPTS);
-    const d = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
-    if (!d) return;
-    e.preventDefault();
-    const next = keys[(keys.indexOf(concept) + d + keys.length) % keys.length];
-    const btn = conceptOpts.find(b => b.dataset.concept === next);
-    const r = btn.getBoundingClientRect();
-    setConcept(next, [r.left + r.width / 2, r.top + r.height / 2]);
-    btn.focus();
-  });
-  addEventListener('resize', placePill);
-  if (document.fonts) document.fonts.ready.then(placePill);
   setConcept('midnight', null, true);
 
   /* ------------------------------------------------------------------ */
@@ -412,6 +391,19 @@
     document.body.appendChild(billFloat);
     layers = $$('.bill-float__layer', billFloat);
   }
+  // generated talent portraits replace the stand-ins as soon as they're dropped into assets/lineup
+  rows.forEach((r, k) => {
+    const local = r.dataset.local;
+    if (!local) return;
+    const im = new Image();
+    im.onload = () => {
+      r.dataset.img = local;
+      const inRow = $('.bill__img', r);
+      if (inRow) inRow.style.backgroundImage = `url('${local}')`;
+      if (layers[k]) $('.bill-float__img', layers[k]).style.backgroundImage = `url('${local}')`;
+    };
+    im.src = local;
+  });
   function showImage(i) {
     if (!billFloat || i === fCur) return;
     layers.forEach((l, k) => { l.classList.toggle('is-prev', k === fCur); l.classList.toggle('is-on', k === i); });
@@ -444,27 +436,237 @@
   /* The invitation: an envelope that opens, and closes again             */
   /* ------------------------------------------------------------------ */
 
+  // Gold leaf confetti: a few metallic flecks that flutter and fade. Its own
+  // fixed canvas, and the loop only runs while there are flecks to draw.
+  const confetti = (() => {
+    if (reduced) return { burst() {} };
+    const cv = document.createElement('canvas');
+    cv.className = 'confetti';
+    cv.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(cv);
+    const cx = cv.getContext('2d');
+    const COLORS = ['#d6b97c', '#c9a96a', '#efe0b8', '#b8925a', '#f5f0e4'];
+    let parts = [], raf = 0, dpr = 1;
+    const fit = () => {
+      dpr = Math.min(2, devicePixelRatio || 1);
+      cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
+    };
+    fit(); addEventListener('resize', fit);
+    function frame() {
+      cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      cx.clearRect(0, 0, innerWidth, innerHeight);
+      parts = parts.filter(p => p.life < p.max);
+      for (const p of parts) {
+        p.life++;
+        p.vx *= 0.985; p.vy = p.vy * 0.985 + p.g;
+        p.x += p.vx + Math.sin(p.life * p.sway + p.ph) * 0.35;
+        p.y += p.vy;
+        p.rot += p.spin; p.tilt += p.flip;
+        const k = p.life / p.max;
+        const fade = k < 0.08 ? k / 0.08 : k > 0.65 ? 1 - (k - 0.65) / 0.35 : 1;
+        const face = Math.cos(p.tilt);
+        cx.save();
+        cx.translate(p.x, p.y);
+        cx.rotate(p.rot);
+        cx.scale(1, face);
+        // metallic: brighter when the fleck turns flat to the light
+        cx.globalAlpha = fade * (0.55 + 0.45 * Math.abs(face));
+        cx.fillStyle = p.c;
+        if (p.dot) { cx.beginPath(); cx.arc(0, 0, p.w / 2, 0, Math.PI * 2); cx.fill(); }
+        else cx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        cx.restore();
+      }
+      raf = parts.length ? requestAnimationFrame(frame) : 0;
+      if (!raf) cx.clearRect(0, 0, innerWidth, innerHeight);
+    }
+    return {
+      // x, y: origin in viewport px; n: how many; spread: width of the origin line; power: how high they fly
+      burst(x, y, n, spread, power) {
+        for (let i = 0; i < n; i++) {
+          const dot = Math.random() < 0.22;
+          const w = dot ? 2 + Math.random() * 2.5 : 4 + Math.random() * 5;
+          const a = -Math.PI / 2 + (Math.random() - 0.5) * 1.9;
+          const v = power * (0.45 + Math.random() * 0.75);
+          parts.push({
+            x: x + (Math.random() - 0.5) * spread, y: y + (Math.random() - 0.5) * 8,
+            vx: Math.cos(a) * v, vy: Math.sin(a) * v, g: 0.05 + Math.random() * 0.03,
+            w, h: dot ? w : 1.6 + Math.random() * 1.8, dot,
+            rot: Math.random() * 6.28, spin: (Math.random() - 0.5) * 0.12,
+            tilt: Math.random() * 6.28, flip: 0.06 + Math.random() * 0.12,
+            sway: 0.04 + Math.random() * 0.05, ph: Math.random() * 6.28,
+            c: COLORS[(Math.random() * COLORS.length) | 0],
+            life: 0, max: 120 + Math.random() * 90,
+          });
+        }
+        if (!raf) raf = requestAnimationFrame(frame);
+      },
+    };
+  })();
+
+  // One timeline, t from 0 (sealed) to 1 (card on the table). Time, hover
+  // and a pull of the card all move the same t, so any motion can be
+  // interrupted and reversed without a jump.
   const envEl = $('#envelope');
-  let envOpen = false;
+  const envDetails = $('#details');
+  const envP = {
+    back: $('.envx__back', envEl), pocket: $('.envx__pocket', envEl), flap: $('.envx__flap', envEl),
+    crest: $('.env2__crest', envEl), flapOut: $('.envx__flap-out', envEl), flapIn: $('.envx__flap-in', envEl), card: $('#icard'), hint: $('.envx__hint', envEl),
+  };
+  const seg = (t, a, b) => clamp((t - a) / (b - a), 0, 1);
+  const eio = x => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+  const eout = x => 1 - Math.pow(1 - x, 3);
+  const ein = x => x * x * x;
+  const CARD_INSET = 'inset 0 0 0 1px rgba(22, 27, 76, 0.16), inset 0 0 0 6px #f5f0e4, inset 0 0 0 7px rgba(201, 169, 106, 0.7)';
+  let envT = 0, envLastT = 0, envPeek = 0, envPeekV = 0, envPeekTo = 0, envOpen = false, envTween = null, envRaf = 0;
+  let envH = 1, envS = 1.28, envHover = false;
+  function measureEnv() {
+    envH = envEl.offsetHeight || 1;
+    envS = parseFloat(getComputedStyle(envEl).getPropertyValue('--card-scale')) || 1.28;
+  }
+  function renderEnv() {
+    const t = envT, H = envH, pk = envPeek;
+    const p1 = eio(seg(t, 0, 0.3));                // flap swings back
+    const p2 = eio(seg(t, 0.2, 0.6));              // card rises out
+    const p3 = eio(seg(t, 0.58, 1));               // card comes forward, envelope falls away
+    const settle = 0.45 * H * eio(seg(t, 0, 0.45)); // the envelope sinks a little to make room
+    const drop = settle + 0.9 * H * eio(seg(t, 0.58, 0.95));
+    const fade = 1 - eout(seg(t, 0.66, 0.92));
+    const angle = p1 * 180;
+    const hover = pk * (1 - p1); // hover only while the flap is shut
+    const liftPx = -10 * hover;
+    const base = settle - 0.92 * H * p2 - 0.26 * H * hover + liftPx; // shows the wordmark, keeps the title a secret
+    const cardY = base + (-0.15 * H - base) * p3;
+    const sc = 1 + (envS - 1) * p3;
+    const tilt = Math.sin(p2 * Math.PI) * 5 * (1 - p3);
+    const g = `translate3d(0, ${(drop + liftPx).toFixed(2)}px, 0)`;
+    envEl.style.setProperty('--hover', hover.toFixed(3));
+    const o = fade.toFixed(3);
+    // the back goes first so it never shows through the pocket as it fades
+    const ob = (1 - eout(seg(t, 0.6, 0.72))).toFixed(3);
+    envP.back.style.transform = g; envP.pocket.style.transform = g; envP.crest.style.transform = g;
+    envP.flap.style.transform = `${g} rotateX(${angle.toFixed(2)}deg)`;
+    envP.flap.style.zIndex = angle > 90 ? '1' : '5';
+    envP.back.style.opacity = ob;
+    envP.pocket.style.opacity = envP.crest.style.opacity = envP.flapOut.style.opacity = envP.flapIn.style.opacity = o;
+    // once the card has fully cleared the pocket it comes in front of the envelope
+    envP.card.style.zIndex = p2 > 0.995 ? '6' : '2';
+    envP.card.style.transform = `translate3d(0, ${cardY.toFixed(2)}px, 0) rotateX(${tilt.toFixed(2)}deg) scale(${sc.toFixed(4)})`;
+    envP.card.style.boxShadow = p3 > 0.001 ? `${CARD_INSET}, 0 ${(44 * p3).toFixed(1)}px 70px -34px rgba(0, 0, 0, ${(0.75 * p3).toFixed(3)})` : '';
+    envP.hint.style.opacity = (1 - seg(t + pk * 0.1, 0, 0.1)).toFixed(3);
+    const revealed = t > 0.9;
+    if (revealed !== envDetails.classList.contains('is-revealed')) envDetails.classList.toggle('is-revealed', revealed);
+    envEl.classList.toggle('is-card', t > 0.97);
+    if (envLastT < 0.86 && t >= 0.86 && envTween && envTween.to === 1) {
+      const r = envP.card.getBoundingClientRect();
+      confetti.burst(r.left + r.width / 2, r.top + r.height * 0.2, 46, r.width * 0.8, 5.2);
+    }
+    if (audio && envLastT < 0.9 && t >= 0.9) audio.chime();
+    envLastT = t;
+  }
+  function envLoop(now) {
+    envRaf = 0;
+    let busy = false;
+    if (envTween) {
+      const k = clamp((now - envTween.t0) / envTween.d, 0, 1);
+      envT = envTween.from + (envTween.to - envTween.from) * k;
+      if (k >= 1) envTween = null; else busy = true;
+    }
+    // the peek runs on a soft spring, so the card slips up with a little overshoot
+    envPeekV = (envPeekV + (envPeekTo - envPeek) * 0.075) * 0.74;
+    envPeek += envPeekV;
+    if (Math.abs(envPeekV) < 0.0004 && Math.abs(envPeekTo - envPeek) < 0.001) { envPeek = envPeekTo; envPeekV = 0; } else busy = true;
+    renderEnv();
+    if (busy) envRaf = requestAnimationFrame(envLoop);
+  }
+  const envKick = () => { if (!envRaf) envRaf = requestAnimationFrame(envLoop); };
+  function envTo(to, full) {
+    const d = reduced ? 0 : Math.abs(to - envT) * full;
+    if (d < 1) { envTween = null; envT = to; } else envTween = { from: envT, to, t0: performance.now(), d };
+    envKick();
+  }
   function setEnvelope(open) {
     envOpen = open;
-    envEl.classList.toggle('open', open);
-    envEl.classList.toggle('close', !open);
+    if (open) envEl.classList.remove('is-peek');
     envEl.setAttribute('aria-expanded', String(open));
     envEl.setAttribute('aria-label', open ? 'Close the invitation' : 'Open the invitation');
-    // once the letter is out, the envelope leaves and only the card stays
-    clearTimeout(envEl._t);
-    if (open) envEl._t = setTimeout(() => { envEl.classList.add('is-card'); $('#details').classList.add('is-revealed'); }, reduced ? 0 : 1250);
-    else { envEl.classList.remove('is-card'); $('#details').classList.remove('is-revealed'); }
+    envPeekTo = !open && envHover ? 1 : 0;
+    envTo(open ? 1 : 0, open ? 2300 : 1500);
     if (audio) audio.blip(open ? 900 : 600, 0.02);
   }
-  envEl.addEventListener('click', e => { if (!e.target.closest('.env2__where')) setEnvelope(!envOpen); });
+  measureEnv(); renderEnv();
+  addEventListener('resize', () => { measureEnv(); renderEnv(); });
+
+  let envDrag = null, envSkipClick = false;
+  envEl.addEventListener('click', e => {
+    if (envSkipClick) { envSkipClick = false; return; }
+    if (!e.target.closest('.env2__where')) setEnvelope(!envOpen);
+  });
   envEl.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEnvelope(!envOpen); } });
+  envEl.addEventListener('pointerenter', e => { if (e.pointerType !== 'mouse') return; envHover = true; if (!envOpen) {
+    envPeekTo = 1; envKick();
+    envEl.classList.add('is-peek');
+    const now = performance.now();
+    if (now - (envEl._fleck || 0) > 1400) {
+      envEl._fleck = now;
+      const r = envEl.getBoundingClientRect();
+      setTimeout(() => { if (envHover && !envOpen) confetti.burst(r.left + r.width / 2, r.top - envH * 0.1, 12, r.width * 0.6, 2.6); }, 180);
+    }
+  } });
+  envEl.addEventListener('pointerleave', e => { if (e.pointerType !== 'mouse') return; envHover = false; envPeekTo = 0; envKick(); envEl.classList.remove('is-peek'); });
+  // pull the card up out of the envelope (mouse only, so touch can still scroll)
+  envEl.addEventListener('pointerdown', e => {
+    envSkipClick = false;
+    if (e.pointerType !== 'mouse' || e.button !== 0 || envOpen) return;
+    envDrag = { y: e.clientY, t: envT, moved: false, ly: e.clientY, lt: e.timeStamp, v: 0 };
+  });
+  addEventListener('pointermove', e => {
+    if (!envDrag) return;
+    const dy = envDrag.y - e.clientY;
+    if (!envDrag.moved) {
+      if (Math.abs(dy) < 6) return;
+      envDrag.moved = true; envTween = null; envEl.classList.add('is-pulling');
+    }
+    const dt = e.timeStamp - envDrag.lt;
+    if (dt > 0) envDrag.v = (envDrag.ly - e.clientY) / dt;
+    envDrag.ly = e.clientY; envDrag.lt = e.timeStamp;
+    envT = clamp(envDrag.t + dy / (envH * 1.3), 0, 0.8);
+    envKick();
+  });
+  addEventListener('pointerup', () => {
+    if (!envDrag) return;
+    const d = envDrag; envDrag = null;
+    envEl.classList.remove('is-pulling');
+    if (!d.moved) return;
+    envSkipClick = true;
+    setEnvelope(envT > 0.14 || d.v > 0.45);
+  });
+  // the envelope leans toward the cursor while it waits to be opened
+  const envStage = $('#envStage');
+  if (finePointer && !reduced) {
+    let etx = 0, ety = 0, ecx = 0, ecy = 0;
+    envStage.addEventListener('pointermove', e => {
+      const r = envStage.getBoundingClientRect();
+      etx = (e.clientX - r.left) / r.width - 0.5;
+      ety = (e.clientY - r.top) / r.height - 0.5;
+    });
+    envStage.addEventListener('pointerleave', () => { etx = 0; ety = 0; });
+    const lean = () => {
+      const k = envEl.classList.contains('is-card') ? 0.35 : 1;
+      ecx = lerp(ecx, etx * k, 0.08); ecy = lerp(ecy, ety * k, 0.08);
+      envStage.style.transform = Math.abs(ecx) + Math.abs(ecy) < 0.001 ? '' : `perspective(1400px) rotateY(${(ecx * 10).toFixed(2)}deg) rotateX(${(-ecy * 8).toFixed(2)}deg)`;
+      requestAnimationFrame(lean);
+    };
+    requestAnimationFrame(lean);
+  }
   const where = $('.env2__where');
   where.addEventListener('click', () => where.classList.toggle('is-open'));
   const envIO = new IntersectionObserver(entries => {
     if (!entries.some(en => en.isIntersecting)) return;
-    setTimeout(() => setEnvelope(true), reduced ? 0 : 1000);
+    if (!reduced) setTimeout(() => {
+      if (envOpen || envT > 0) return;
+      envPeekTo = 1; envKick();
+      setTimeout(() => { envPeekTo = envHover && !envOpen ? 1 : 0; envKick(); }, 700);
+    }, 900);
     envIO.disconnect();
   }, { threshold: 0.55 });
   envIO.observe($('#envStage'));
@@ -528,27 +730,9 @@
     $('#heroWhere').textContent = v || DEFAULTS.shortCity;
     $('#icardCity').textContent = v || 'New York City';
   });
-  const SAMPLES = [
-    { name: 'Spring Collection', host: 'Maison Vale', date: 'Fri Mar 12 2027', city: 'Paris', concept: 'blacktie' },
-    { name: 'Launch Night', host: 'Northbound', date: 'Thu Jun 3 2027', city: 'Miami', concept: 'afterhours' },
-    { name: 'The Private Dinner', host: 'Hôtel Ondine', date: 'Sat Feb 6 2027', city: 'London', concept: 'blacktie' },
-    { name: 'Summer Rooftop', host: 'Atlas Audio', date: 'Sat Jul 17 2027', city: 'Los Angeles', concept: 'midnight' },
-    { name: 'Gallery Opening', host: 'Ferro & Co', date: 'Wed Apr 21 2027', city: 'Mexico City', concept: 'afterhours' }
-  ];
-  let sampleAt = -1;
-  $('#cShuffle').addEventListener('click', e => {
-    sampleAt = (sampleAt + 1) % SAMPLES.length;
-    const smp = SAMPLES[sampleAt];
-    const fill = (inp, v) => { inp.value = v; inp.dispatchEvent(new Event('input')); };
-    fill(nameIn, smp.name); fill(hostIn, smp.host); fill(dateIn, smp.date); fill(cityIn, smp.city);
-    setConcept(smp.concept, [e.clientX || innerWidth / 2, e.clientY || innerHeight / 2]);
-    if (audio) audio.chime();
-  });
 
   $('#cReset').addEventListener('click', () => {
     [nameIn, hostIn, dateIn, cityIn].forEach(i => { i.value = ''; i.dispatchEvent(new Event('input')); });
-    setConcept('midnight', null, true);
-    sampleAt = -1;
   });
 
   /* ------------------------------------------------------------------ */
@@ -560,10 +744,28 @@
   const done = $('#listDone');
   let lastOpener = null;
 
+  const invitePanel = $('.invite__panel', dialog);
+  const canZoom = typeof CSS !== 'undefined' && CSS.supports && CSS.supports('zoom', '0.5');
+  if (canZoom) invitePanel.classList.add('is-fit');
+  function fitInvite() {
+    if (!canZoom || !dialog.open) return;
+    invitePanel.style.zoom = '';
+    invitePanel.style.maxHeight = '';
+    const avail = (window.visualViewport ? visualViewport.height : innerHeight) - 24;
+    const need = invitePanel.scrollHeight;
+    if (need <= avail) return;
+    // scale the whole card, type and all, rather than letting it scroll
+    invitePanel.style.maxHeight = 'none';
+    invitePanel.style.zoom = Math.max(0.55, avail / need).toFixed(3);
+  }
+  addEventListener('resize', fitInvite);
+  if (window.visualViewport) visualViewport.addEventListener('resize', fitInvite);
+
   function openInvite(opener) {
     lastOpener = opener;
     if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open', '');
     body.classList.add('invite-open');
+    fitInvite();
     lockScroll(true);
     requestAnimationFrame(() => dialog.classList.add('is-open'));
     setTimeout(() => (done.hidden ? $('#fName') : done).focus({ preventScroll: true }), 60);
@@ -626,6 +828,7 @@
       setTimeout(() => {
         form.hidden = true;
         done.hidden = false;
+        fitInvite();
         done.focus({ preventScroll: true });
         fillTicket();
         if (audio) audio.chime();
@@ -754,33 +957,6 @@
     }, 'image/png');
   });
 
-  /* ------------------------------------------------------------------ */
-  /* Saving the date                                                     */
-  /* ------------------------------------------------------------------ */
-
-  const calBtn = $('#addCal');
-  calBtn.addEventListener('click', () => {
-    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-    const host = $('#hostLabel').textContent || 'Rumor';
-    const ics = [
-      'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Rumor//NYE Vol 01//EN', 'CALSCALE:GREGORIAN',
-      'BEGIN:VEVENT', 'UID:rumor-nye-vol01@therumor.com', `DTSTAMP:${stamp}`,
-      'DTSTART:20270101T020000Z', 'DTEND:20270101T080000Z',
-      `SUMMARY:${host} Presents: ${previewEl.getAttribute('aria-label') || previewEl.textContent}`,
-      'LOCATION:New York City (shared with the guest list on Dec 30)',
-      'DESCRIPTION:Guest list only. 21+. Cocktail chic. Doors 9 PM until late.',
-      'END:VEVENT', 'END:VCALENDAR'
-    ].join('\r\n');
-    const url = URL.createObjectURL(new Blob([ics], { type: 'text/calendar' }));
-    const a = document.createElement('a');
-    a.href = url; a.download = 'rumor-new-years-eve.ics';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
-    calBtn.classList.add('is-done');
-    if (audio) audio.chime();
-    clearTimeout(calBtn._t);
-    calBtn._t = setTimeout(() => calBtn.classList.remove('is-done'), 3600);
-  });
 
 
   /* ------------------------------------------------------------------ */
@@ -810,7 +986,7 @@
     if (m && m.dragging) return { label: 'Spin', mode: 'label' };
     if (el.closest('.scard')) return { label: 'View', mode: 'label' };
     if (el.closest('.env2__where')) return { label: 'Reveal', mode: 'label' };
-    if (el.closest('.env2')) return { label: envOpen ? 'Close' : 'Open', mode: 'label' };
+    if (el.closest('.envx')) return { label: envOpen ? 'Close' : 'Open', mode: 'label' };
     if (el.closest('a, button, label')) return { label: '', mode: 'link' };
     if (rumor() && rumor().ballHit(px, py)) return { label: 'Tap', mode: 'label' };
     return { label: '', mode: '' };
